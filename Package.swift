@@ -14,8 +14,8 @@ let package = Package(
             targets: ["RsSlide"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/rayman-zhao/RsHelper", branch: "main"),
-        .package(url: "https://github.com/rayman-zhao/RsPack", branch: "main"),
+        .package(url: "https://github.com/lijiyang1/RsHelper", branch: "main"),
+        .package(url: "https://github.com/lijiyang1/RsPack", branch: "main"),
     ],
     targets: [
         .target(
