@@ -6,18 +6,19 @@ import RsHelper
 struct SVSPreview : SlidePreview {
     let path: URL
 
-    func fetchMacroJPEGImage() -> [UInt8] {
+    func fetchMacroJPEGImage() -> [UInt8]? {
     #if os(Windows)
-        let tiff = TIFFOpenW(path.path.utf16 + [0], "rh")
+        let tiff = TIFFOpenW(path.path.wideString, "rh")
     #else
         let tiff = TIFFOpen(path.path, "rh")
     #endif
-        guard tiff != nil else { return [] }
+        guard tiff != nil else { return nil }
         defer {
             TIFFClose(tiff)
         }
         
-        return TIFFReadJPEGImage(tiff, TIFFNumberOfDirectories(tiff) - 1)
+        let macro = TIFFReadJPEGImage(tiff, TIFFNumberOfDirectories(tiff) - 1)
+        return macro.isEmpty ? nil : macro
     }
 }
 
@@ -51,14 +52,18 @@ final class SVS : Slide {
     let tierCount: Int = 1
     let tierSpacing: Double = 0.0
     var tileTrait: TileTrait = TileTrait(width: 0, height: 0)
-    var layerZoom = 0
+    var layerZoom = 2
     let extendXMLString: String = ""
     var layerImageSize: [(w: Int, h: Int)] = []
     var layerTileSize: [(r: Int, c: Int)] = []
+
+    lazy var baseLayerPixelData: (pixels: [UInt8], layer: Int, width: Int, pitch: Int, height: Int)? = {
+        fetchPixelData(at: layerTileSize.count - 1)
+    }()
     
     init?(path: URL) {
     #if os(Windows)
-        tiff = TIFFOpenW(path.path.utf16 + [0], "rh")
+        tiff = TIFFOpenW(path.path.wideString, "rh")
     #else
         tiff = TIFFOpen(path.path, "rh") // h - Read TIFF header only, do not load the first directory.
     #endif
@@ -85,19 +90,21 @@ final class SVS : Slide {
         TIFFClose(tiff)
     }
     
-    func fetchLabelJPEGImage() -> [UInt8] {
-        guard labelDir != 0 else { return [] }
-        return TIFFReadJPEGImage(tiff, labelDir)
+    func fetchLabelJPEGImage() -> [UInt8]? {
+        guard labelDir != 0 else { return nil }
+        let label = TIFFReadJPEGImage(tiff, labelDir)
+        return label.isEmpty ? nil : label
     }
     
-    func fetchMacroJPEGImage() -> [UInt8] {
-        guard macroDir != 0 else { return [] }
-        return TIFFReadJPEGImage(tiff, macroDir)
+    func fetchMacroJPEGImage() -> [UInt8]? {
+        guard macroDir != 0 else { return nil }
+        let macro = TIFFReadJPEGImage(tiff, macroDir)
+        return macro.isEmpty ? nil : macro
     }
 
-    func fetchTileRawImage(at coord: TileCoordinate) -> [UInt8] {
-        guard validate(coord: coord) else { return [] }
-        guard TIFFSetDirectory(tiff, layerDir[coord.layer]) else { return [] }
+    func fetchTileRawImage(at coord: TileCoordinate) -> [UInt8]? {
+        guard case .valid = validate(coord: coord) else { return nil }
+        guard TIFFSetDirectory(tiff, layerDir[coord.layer]) else { return nil }
         
         let tid = TIFFComputeTile(tiff, UInt32(coord.col * tileTrait.size.w), UInt32(coord.row * tileTrait.size.h), 0, 0)
         let bufSize = tileTrait.maxBytes
@@ -105,14 +112,11 @@ final class SVS : Slide {
         // TODO: var span = buf.mutableSpan
         if tilePhotometric == PHOTOMETRIC_RGB {
             let tileSize = Int(TIFFReadEncodedTile(tiff, tid, &buf, tmsize_t(bufSize)))
-            if (tileSize > 0) {
-                return trimTile(for: tjCompress(buf, TJPF_RGB, tileTrait.size.w, tileTrait.size.h), at: coord)
-            } else {
-                return []
-            }
+            guard tileSize > 0 else { return nil }
+            return tjCompress(buf, tileTrait.tjPF, tileTrait.size.w, tileTrait.size.h)
         } else {
             let tileSize = Int(TIFFReadRawTile(tiff, tid, &buf, tmsize_t(bufSize)))
-            return trimTile(for: Array(buf[..<tileSize]), at: coord)
+            return Array(buf[..<tileSize])
         }
     }
 
@@ -134,17 +138,17 @@ final class SVS : Slide {
             if dir == 0 && tw != nil { // First directory always be bottom layer image.
                 importMetadata(from: dir)
                 importLayer(from: dir)
-            }
-            else if tw != nil { // Sequential reduced layer image.
+            } else if tw != nil { // Sequential reduced layer image.
                 importLayer(from: dir)
-            }
-            else if dir == 1 { // Second non-reduced directory, should be thumbnail image.
-                
-            }
-            else if TIFFLastDirectory(tiff) == 0 { // Second last directory, should be label image.
+            } else if dir == 1 {
+                // Ignore second non-reduced directory, should be thumbnail image.
+            } else if labelDir == 0, let desc: UnsafeMutablePointer<CChar> = TIFFGetField(tiff, TIFFTAG_IMAGEDESCRIPTION), String(cString: desc).lowercased().contains("label") {
                 labelDir = dir
-            }
-            else { // Last directory, should be macro image.
+            } else if macroDir == 0, let desc: UnsafeMutablePointer<CChar> = TIFFGetField(tiff, TIFFTAG_IMAGEDESCRIPTION), String(cString: desc).lowercased().contains("macro") {
+                macroDir = dir
+            } else if labelDir == 0 && TIFFLastDirectory(tiff) == 0 { // Second last directory, should be label image.
+                labelDir = dir
+            } else if macroDir == 0 && TIFFLastDirectory(tiff) == 1 { // Last directory, should be macro image.
                 macroDir = dir
             }
             
@@ -181,6 +185,7 @@ final class SVS : Slide {
                 scanObjective = v
             }
             
+            scn.currentIndex = scn.string.startIndex
             if scn.scanUpToString("MPP") != nil,
                scn.scanString("MPP") != nil,
                scn.scanString("=") != nil,

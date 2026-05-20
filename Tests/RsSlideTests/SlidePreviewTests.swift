@@ -10,6 +10,7 @@ struct SlidePreviewTests {
    }
 
     @Test(.serialized, arguments: [
+        ("SVS/B20028048-1.svs", false),
         ("SVS/125870-2022;1C_20220926112546.svs", false),
         ("SVS/2312399.svs", false),
         ("KFB/1021754 (2).tif", false),
@@ -17,6 +18,9 @@ struct SlidePreviewTests {
         ("MDS/19.1_20160414_1904236501_2/1.mds", true),
         ("MDS/114504/1.mds", true),
         ("MDS/0002/1.mds", true),
+        ("MDSX/slide.mdsx", true),
+        ("MDSX/mdsx_test_enc/1.mdsx", true),
+        ("迪英加/L1-4.svs", false),
     ])
     func previewValid(_ fn: String, _ more: Bool) async throws {
         let trait = URL(filePath: fn, relativeTo: BASE).slideTrait
@@ -41,7 +45,7 @@ struct SlidePreviewTests {
 
     func evalSlidePreviewMacroImage(_ sp: SlidePreview) {
         let st = Date()
-        let img = Data(sp.fetchMacroJPEGImage())
+        let img = Data(sp.fetchMacroJPEGImage()!)
         let et = Date()
         print("Macro image consumed \(et.timeIntervalSince(st) * 1000) ms")
         #expect(img.isJPEG)

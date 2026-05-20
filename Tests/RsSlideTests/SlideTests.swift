@@ -1,8 +1,9 @@
 import Foundation
+import FoundationXML
 import Testing
 import LibJPEGTurbo
 import LibTIFF
-import RsSlide
+@testable import RsSlide
 
 @Suite
 struct SlideTests {
@@ -13,6 +14,8 @@ struct SlideTests {
     }
 
     @Test(.serialized, arguments: [
+        ("SVS/B20028048-1.svs", "C5A15CA7-6151-5520-B25A-212D441C30D5", "B20028048-1", "SVS", true, true, false),
+        ("3D Histech/1.tif", "193DD7EF-940E-513A-899E-45B42749E753", "1", "TIF", false, false, false),
         ("志盈/60637.svs", "8495DB07-A11A-55C5-B606-AAFAB29BF4D6", "60637", "SVS", true, true, false),
         ("SVS/125870-2022;1C_20220926112546.svs", "33D0CE0D-3A5F-55B6-BF87-F47841EE52A5", "125870-2022;1C_20220926112546", "SVS", true, true, false),
         ("SVS/2312399.svs", "9F23270E-E03B-5F9D-9D85-136835176D09", "2312399", "SVS", false, true, false),
@@ -23,6 +26,11 @@ struct SlideTests {
         ("MDS/114504/", "509f235d-099a-40aa-a56f-eb96d82ae372", "114504", "MDS", false, false, true),
         ("MDS/0002/", "A159D05B-ADE7-4FBA-B344-DA6E1BE33102", "0002", "MDS", false, true, true),
         ("MDS/BW20200014/", "7A25F880-7BC2-44BA-8362-8E82EC70A6BF", "BW20200014", "MDS", true, true, true),
+        ("MDSX/4/", "7C759554-512B-452C-A7DD-B512883B6602", "4", "MDSX", false, false, true),
+        ("MDSX/slide.mdsx", "81be8ba7-b0be-4f96-81be-014ece99e581", "slide", "MDSX", true, true, true),
+        ("MDSX/mdsx_test_enc/1.mdsx", "7B517EA2-2601-4279-A2B9-30E1415E5935", "mdsx_test_enc", "MDSX", true, true, true),
+        ("迪英加/L1-4.svs", "0A508412-C06C-5A09-BED2-DAC5F736B9D7", "L1-4", "SVS", true, true, false),
+        ("SVS/201203757.svs", "4090FE56-7C14-569F-B8F0-DDEFB0D68A9D", "201203757", "SVS", true, false, false),
     ])
     func slideValid(_ fn: String, _ sid: String, _ name: String, _ fmt: String, _ label: Bool, _ macro: Bool, _ more: Bool) async throws {
         let trait = URL(filePath: fn, relativeTo: BASE).slideTrait
@@ -40,17 +48,18 @@ struct SlideTests {
             if label {
                 try evalSlideLabelImage(s)
             } else {
-                #expect(s.fetchLabelJPEGImage().isEmpty)
+                #expect(s.fetchLabelJPEGImage() == nil)
             }
             if macro {
                 try evalSlideMacroImage(s)
             } else {
-                #expect(s.fetchMacroJPEGImage().isEmpty)
+                #expect(s.fetchMacroJPEGImage() == nil)
             }
             try evalSlideThumbnailImage(s)
         }
         #expect(evalSequenceTiles(s) == evalRandomTiles(s))
-        evalNonExistingTiles(s)
+
+        try evalVirtualTiles(s)
     }
 }
 
@@ -101,8 +110,10 @@ func evalSlideMetadata(_ s: Slide) async {
         print("Layer \(i) \(s.layerImageSize[i].w)-\(s.layerImageSize[i].h) in \(s.layerTileSize[i].r)-\(s.layerTileSize[i].c)")
         
         if i > 0 {
-            #expect(s.layerImageSize[i - 1].w / s.layerZoom == s.layerImageSize[i].w)
-            #expect(s.layerImageSize[i - 1].h / s.layerZoom == s.layerImageSize[i].h)
+            let w = Int(ceil(Double(s.layerImageSize[i - 1].w) / Double(s.layerZoom)))
+            let h = Int(ceil(Double(s.layerImageSize[i - 1].h) / Double(s.layerZoom)))
+            #expect(0...1 ~= w - s.layerImageSize[i].w)
+            #expect(0...1 ~= h - s.layerImageSize[i].h)
             #expect(s.layerTileSize[i - 1].r / s.layerZoom <= (s.layerTileSize[i].r + 1))
             #expect(s.layerTileSize[i - 1].c / s.layerZoom <= (s.layerTileSize[i].c + 1))
         }
@@ -110,11 +121,19 @@ func evalSlideMetadata(_ s: Slide) async {
     
     #expect([2, 4].contains(s.layerZoom))
     print("Layer zoom \(s.layerZoom)")
+
+    if !s.extendXMLString.isEmpty {
+        let xml = try? XMLDocument(xmlString: s.extendXMLString)
+        #expect(xml != nil)
+        xml?.forEachElement { parent, name, attribute, value in
+            print("\(parent)/\(name) - \(attribute) - \(value)")
+        }
+    }
 }
 
 func evalSlideLabelImage(_ s: Slide) throws {
     let st = Date()
-    let img = Data(s.fetchLabelJPEGImage())
+    let img = Data(s.fetchLabelJPEGImage()!)
     let et = Date()
     print("Label image consumed \(et.timeIntervalSince(st) * 1000) ms")
     #expect(img.isJPEG)
@@ -126,7 +145,7 @@ func evalSlideLabelImage(_ s: Slide) throws {
 
 func evalSlideMacroImage(_ s: Slide) throws {
     let st = Date()
-    let img = Data(s.fetchMacroJPEGImage())
+    let img = Data(s.fetchMacroJPEGImage()!)
     let et = Date()
     print("Macro image consumed \(et.timeIntervalSince(st) * 1000) ms")
     #expect(img.isJPEG)
@@ -138,7 +157,7 @@ func evalSlideMacroImage(_ s: Slide) throws {
 
 func evalSlideThumbnailImage(_ s: Slide) throws {
     let st = Date()
-    let jpg = s.fetchThumbnailJPEGImage(with: 512)
+    let jpg = s.fetchThumbnailJPEGImage(with: 512)!
     let (w, h) = tjDecompressHeader(jpg)
     #expect(w <= 512 && h <= 512)
     let img = Data(jpg)
@@ -161,7 +180,9 @@ func evalSequenceTiles(_ s: Slide) -> (Int, Int) {
             for rw in 0..<layer.r {
                 for cl in 0..<layer.c {
                     let coord = TileCoordinate(layer: li, row: rw, col: cl)
-                    let td = Data(s.fetchTileRawImage(at: coord))
+                    guard let raw = s.fetchTileImage(at: coord) else { continue }
+                    
+                    let td = Data(raw)
                     if td.isImage {
                         cnt += 1
                         totalSize += td.count                  
@@ -171,6 +192,11 @@ func evalSequenceTiles(_ s: Slide) -> (Int, Int) {
                     //         directoryHint: .notDirectory,
                     //         relativeTo: BASE))
                     // }
+
+                    if case .valid(trimming: true) = s.validate(coord: coord) {
+                        let (w, h) = tjDecompressHeader(raw)
+                        #expect(w < s.tileTrait.size.w || h < s.tileTrait.size.h)
+                    }
                 }
             }
         }
@@ -204,8 +230,8 @@ func evalRandomTiles(_ s: Slide) -> (Int, Int) {
     var cnt = 0 
     let st = Date()
     for coord in tiles {
-        let td = Data(s.fetchTileRawImage(at: coord))
-        if td.isImage{
+        guard let td = s.fetchTileImage(at: coord) else { continue }
+        if Data(td).isImage{
             cnt += 1
             totalSize += td.count
             
@@ -223,27 +249,51 @@ func evalRandomTiles(_ s: Slide) -> (Int, Int) {
     return (tiles.count, cnt)
 }
 
-func evalNonExistingTiles(_ s: Slide) {
+func evalVirtualTiles(_ s: Slide) throws {
+    let tileW = Double(s.tileTrait.size.w)
+    let tileH = Double(s.tileTrait.size.h)
     var width = s.layerImageSize.last?.w ?? 0
     var height = s.layerImageSize.last?.h ?? 0
     var layer = s.layerImageSize.count - 1
-    var cnt = 0
+    
+    var count = 0
+    var missingCount = 0
+    var totalSize = 0
+    let st = Date()
 
-    while width > 0 || height > 0 {
+    repeat {
+        width = Int(ceil((Double(width) / Double(s.layerZoom))))
+        height = Int(ceil((Double(height) / Double(s.layerZoom))))
         layer += 1
-        width /= s.layerZoom
-        height /= s.layerZoom
 
-        for rw in 0..<(height / s.tileTrait.size.h + 1) {
-            for cl in 0..<(width / s.tileTrait.size.w + 1) {
+        for rw in 0..<(Int(ceil(Double(height) / tileH))) {
+            for cl in 0..<(Int(ceil(Double(width) / tileW))) {
                 let coord = TileCoordinate(layer: layer, row: rw, col: cl)
-                let td = s.fetchTileRawImage(at: coord)
-                #expect(td.count == 0)
+                guard let raw = s.fetchTileImage(at: coord) else {
+                    missingCount += 1
+                    continue
+                }
 
-                cnt += 1
+                let (w, h) = tjDecompressHeader(raw)
+                print("Virtual tile \(coord) size \(w) x \(h)")
+                #expect(w > 0 && h > 0)
+
+                count += 1
+                totalSize += raw.count
+
+                // try Data(raw).write(to: URL(filePath: "\(s.name)_\(layer)_\(rw)_\(cl).jpg",
+                //     directoryHint: .notDirectory,
+                //     relativeTo: BASE))
             }
         }
-    }
+    } while width > 1 || height > 1
 
-    #expect(cnt > 0)
+    let et = Date()
+    let totalTime = et.timeIntervalSince(st)
+    
+    print("Virtual valid \(count) tiles consumed \(totalTime) sec.")
+    #expect(count > 0)
+    print("Virtual average tile consumed \(totalTime * 1000 / Double(count)) ms")
+    print("Virtual read speed \(Double(totalSize) / 1024 / 1024 / totalTime) MB/s")
+    #expect(missingCount == 0)
 }
